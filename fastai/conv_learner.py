@@ -23,30 +23,33 @@ class ConvnetBuilder():
         is_reg (bool): is a regression?
         ps (float or array of float): dropout parameters
         xtra_fc (list of ints): list of hidden layers with # hidden neurons
-        xtra_cut (int): # layers earlier than default to cut the model, detault is 0
+        xtra_cut (int): # layers earlier than default to cut the model, default is 0
+        custom_head : add custom model classes that are inherited from nn.modules at the end of the model
+                      that is mentioned on Argument 'f' 
     """
 
-    def __init__(self, f, c, is_multi, is_reg, ps=None, xtra_fc=None, xtra_cut=0):
+    def __init__(self, f, c, is_multi, is_reg, ps=None, xtra_fc=None, xtra_cut=0, custom_head=None, pretrained=True):
         self.f,self.c,self.is_multi,self.is_reg,self.xtra_cut = f,c,is_multi,is_reg,xtra_cut
-        if ps is None: ps = [0.25,0.5]
         if xtra_fc is None: xtra_fc = [512]
+        if ps is None: ps = [0.25]*len(xtra_fc) + [0.5]
         self.ps,self.xtra_fc = ps,xtra_fc
 
         if f in model_meta: cut,self.lr_cut = model_meta[f]
         else: cut,self.lr_cut = 0,0
         cut-=xtra_cut
-        layers = cut_model(f(True), cut)
+        layers = cut_model(f(pretrained), cut)
         self.nf = model_features[f] if f in model_features else (num_features(layers)*2)
-        layers += [AdaptiveConcatPool2d(), Flatten()]
+        if not custom_head: layers += [AdaptiveConcatPool2d(), Flatten()]
         self.top_model = nn.Sequential(*layers)
 
         n_fc = len(self.xtra_fc)+1
         if not isinstance(self.ps, list): self.ps = [self.ps]*n_fc
 
-        fc_layers = self.get_fc_layers()
+        if custom_head: fc_layers = [custom_head]
+        else: fc_layers = self.get_fc_layers()
         self.n_fc = len(fc_layers)
         self.fc_model = to_gpu(nn.Sequential(*fc_layers))
-        apply_init(self.fc_model, kaiming_normal)
+        if not custom_head: apply_init(self.fc_model, kaiming_normal)
         self.model = to_gpu(nn.Sequential(*(layers+fc_layers)))
 
     @property
@@ -81,24 +84,57 @@ class ConvnetBuilder():
 
 
 class ConvLearner(Learner):
+    """
+    Class used to train a chosen supported covnet model. Eg. ResNet-34, etc.
+    Arguments:
+        data: training data for model
+        models: model architectures to base learner
+        precompute: bool to reuse precomputed activations
+        **kwargs: parameters from Learner() class
+    """
     def __init__(self, data, models, precompute=False, **kwargs):
         self.precompute = False
         super().__init__(data, models, **kwargs)
-        self.crit = F.binary_cross_entropy if data.is_multi else F.nll_loss
-        if data.is_reg: self.crit = F.l1_loss
-        elif self.metrics is None:
-            self.metrics = [accuracy_multi] if self.data.is_multi else [accuracy]
+        if hasattr(data, 'is_multi') and not data.is_reg and self.metrics is None:
+            self.metrics = [accuracy_thresh(0.5)] if self.data.is_multi else [accuracy]
         if precompute: self.save_fc1()
         self.freeze()
         self.precompute = precompute
 
-    @classmethod
-    def pretrained(cls, f, data, ps=None, xtra_fc=None, xtra_cut=0, **kwargs):
-        models = ConvnetBuilder(f, data.c, data.is_multi, data.is_reg, ps=ps, xtra_fc=xtra_fc, xtra_cut=xtra_cut)
-        return cls(data, models, **kwargs)
+    def _get_crit(self, data):
+        if not hasattr(data, 'is_multi'): return super()._get_crit(data)
 
+        return F.l1_loss if data.is_reg else F.binary_cross_entropy if data.is_multi else F.nll_loss
+
+    @classmethod
+    def pretrained(cls, f, data, ps=None, xtra_fc=None, xtra_cut=0, custom_head=None, precompute=False,
+                   pretrained=True, **kwargs):
+        models = ConvnetBuilder(f, data.c, data.is_multi, data.is_reg,
+            ps=ps, xtra_fc=xtra_fc, xtra_cut=xtra_cut, custom_head=custom_head, pretrained=pretrained)
+        return cls(data, models, precompute, **kwargs)
+
+    @classmethod
+    def lsuv_learner(cls, f, data, ps=None, xtra_fc=None, xtra_cut=0, custom_head=None, precompute=False,
+                  needed_std=1.0, std_tol=0.1, max_attempts=10, do_orthonorm=False, **kwargs):
+        models = ConvnetBuilder(f, data.c, data.is_multi, data.is_reg,
+            ps=ps, xtra_fc=xtra_fc, xtra_cut=xtra_cut, custom_head=custom_head, pretrained=False)
+        convlearn=cls(data, models, precompute, **kwargs)
+        convlearn.lsuv_init()
+        return convlearn
+    
     @property
     def model(self): return self.models.fc_model if self.precompute else self.models.model
+    
+    def half(self):
+        if self.fp16: return
+        self.fp16 = True
+        if type(self.model) != FP16: self.models.model = FP16(self.model)
+        if not isinstance(self.models.fc_model, FP16): self.models.fc_model = FP16(self.models.fc_model)
+    def float(self):
+        if not self.fp16: return
+        self.fp16 = False
+        if type(self.models.model) == FP16: self.models.model = self.model.module.float()
+        if type(self.models.fc_model) == FP16: self.models.fc_model = self.models.fc_model.module.float()
 
     @property
     def data(self): return self.fc_data if self.precompute else self.data_
@@ -106,9 +142,15 @@ class ConvLearner(Learner):
     def create_empty_bcolz(self, n, name):
         return bcolz.carray(np.zeros((0,n), np.float32), chunklen=1, mode='w', rootdir=name)
 
-    def set_data(self, data):
+    def set_data(self, data, precompute=False):
         super().set_data(data)
-        self.freeze()
+        if precompute:
+            self.unfreeze()
+            self.save_fc1()
+            self.freeze()
+            self.precompute = True
+        else:
+            self.freeze()
 
     def get_layer_groups(self):
         return self.models.get_layer_groups(self.precompute)

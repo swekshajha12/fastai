@@ -3,9 +3,11 @@ channels:
 - fastai
 - pytorch
 - defaults
+- peterjc123
 dependencies:
 - scipy
 - cuda90
+- cudnn
 - numpy
 - pillow
 - jpeg
@@ -20,15 +22,12 @@ dependencies:
 - decorator
 - entrypoints
 - expat
-- fontconfig
-- glib
 - html5lib
 - icu
 - ipykernel
 - ipython
 - ipython_genutils
 - ipywidgets
-- jbig
 - jedi
 - jinja2
 - jsonschema
@@ -36,9 +35,7 @@ dependencies:
 - jupyter_client
 - jupyter_console
 - jupyter_core
-- libffi
-- libgcc
-- libgfortran
+- conda-forge::jupyter_contrib_nbextensions  
 - libiconv
 - libpng
 - libsodium
@@ -63,7 +60,6 @@ dependencies:
 - pillow
 - pip
 - prompt_toolkit
-- ptyprocess
 - pycparser
 - pygments
 - pyparsing
@@ -74,7 +70,6 @@ dependencies:
 - pyzmq
 - qt
 - qtconsole
-- readline
 - scipy
 - seaborn
 - setuptools
@@ -83,10 +78,9 @@ dependencies:
 - six
 - sqlite
 - statsmodels
-- terminado
 - testpath
 - tk
-- tornado
+- tornado<5
 - tqdm
 - traitlets
 - wcwidth
@@ -94,23 +88,19 @@ dependencies:
 - widgetsnbextension
 - xz
 - zeromq
-- pytorch>=0.2.0
-- torchvision>=0.1.9
+- pytorch<0.4
 - bcolz
 - prompt_toolkit
+- pytest
 - pip:
+  - torchvision>=0.1.9
   - opencv-python
   - isoweek
-  - pandas_summary
+  - pandas_summary==0.0.5
   - torchtext
   - graphviz
   - sklearn_pandas
   - feather-format
-  - jupyter_contrib_nbextensions
   - plotnine
-  - awscli
   - kaggle-cli
   - ipywidgets
-  - jupyter_contrib_nbextensions
-  - git+https://github.com/SauceCat/PDPbox.git
-

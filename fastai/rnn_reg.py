@@ -1,8 +1,10 @@
 from .torch_imports import *
 from .core import *
 from functools import wraps
+import torch.nn.functional as F
 from torch.autograd import Variable
 
+IS_TORCH_04 = LooseVersion(torch.__version__) >= LooseVersion('0.4')
 
 def dropout_mask(x, sz, dropout):
     """ Applies a dropout mask whose size is determined by passed argument 'sz'.
@@ -104,6 +106,8 @@ class WeightDrop(torch.nn.Module):
         for name_w in self.weights:
             raw_w = getattr(self.module, name_w + '_raw')
             w = torch.nn.functional.dropout(raw_w, p=self.dropout, training=self.training)
+            if hasattr(self.module, name_w):
+                delattr(self.module, name_w)
             setattr(self.module, name_w, w)
 
     def forward(self, *args):
@@ -162,24 +166,25 @@ class EmbeddingDropout(nn.Module):
         self.embed = embed
 
     def forward(self, words, dropout=0.1, scale=None):
-
         if dropout:
             size = (self.embed.weight.size(0),1)
             mask = Variable(dropout_mask(self.embed.weight.data, size, dropout))
             masked_embed_weight = mask * self.embed.weight
-        else:
-            masked_embed_weight = self.embed.weight
+        else: masked_embed_weight = self.embed.weight
 
-        if scale:
-            masked_embed_weight = scale * masked_embed_weight
+        if scale: masked_embed_weight = scale * masked_embed_weight
 
         padding_idx = self.embed.padding_idx
+        if padding_idx is None: padding_idx = -1
 
-        if padding_idx is None:
-            padding_idx = -1
-
-        X = self.embed._backend.Embedding.apply(words,
-                 masked_embed_weight, padding_idx, self.embed.max_norm,
-                     self.embed.norm_type, self.embed.scale_grad_by_freq, self.embed.sparse)
+        
+        if IS_TORCH_04:
+            X = F.embedding(words,
+                masked_embed_weight, padding_idx, self.embed.max_norm,
+                self.embed.norm_type, self.embed.scale_grad_by_freq, self.embed.sparse)
+        else:
+            X = self.embed._backend.Embedding.apply(words,
+                masked_embed_weight, padding_idx, self.embed.max_norm,
+                self.embed.norm_type, self.embed.scale_grad_by_freq, self.embed.sparse)
 
         return X
